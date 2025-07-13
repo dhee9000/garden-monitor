@@ -3,7 +3,14 @@
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_GFX.h>
 #include <Toggle.h>
-#include "WiFi.h"
+
+#ifdef ESP8266
+#include <ESP8266WiFi.h>
+#elif defined(ESP32)
+#include <WiFi.h>
+#else
+#error "Unknown Platform..."
+#endif
 
 // --- WiFi Credentials ---
 const char* KNOWN_SSIDS[] = {
@@ -48,6 +55,9 @@ void setup() {
 
   Serial.println("Garden Monitor v0.1.0");
   Serial.println("Initializing Firmware...");
+
+  // Initialize Button
+  button.blink(10);
 
   // Initialize I2C port
   I2C_PORT.begin(I2C_SDA, I2C_SCL);
