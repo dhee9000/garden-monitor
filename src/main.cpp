@@ -1,190 +1,164 @@
+#include "../lib/Config/Config.h"
+#include "../lib/SensorManager/SensorManager.h"
+#include "../lib/DisplayManager/DisplayManager.h"
+#include "../lib/WiFiManager/WiFiManager.h"
+#include "../lib/ButtonManager/ButtonManager.h"
+#include "../lib/InfluxManager/InfluxManager.h"
+#include <vector>
 #include <Wire.h>
-#include <Adafruit_AHTX0.h>
-#include <Adafruit_SSD1306.h>
-#include <Adafruit_GFX.h>
-#include <Toggle.h>
-
-#ifdef ESP8266
-#include <ESP8266WiFi.h>
-#elif defined(ESP32)
-#include <WiFi.h>
-#else
-#error "Unknown Platform..."
-#endif
 
 // --- WiFi Credentials ---
-const char* KNOWN_SSIDS[] = {
-  "NotResNet",
-  "TP-Link_5E98"
-};
+const std::vector<const char*> KNOWN_SSIDS = { "NotResNet", "TP-Link_5E98" };
+const std::vector<const char*> KNOWN_PASSWORDS = { "DY123456", "Dheeraj@1710" };
 
-const char* KNOWN_PASSWORDS[] = {
-  "DY123456",
-  "Dheeraj@1710"
-};
+// --- InfluxDB Config ---
+const char* INFLUX_URL = "https://influx.dhrj.io";
+const char* INFLUX_ORG = "notresnet";
+const char* INFLUX_BUCKET = "garden_dev";
+const char* INFLUX_TOKEN = "UHxssyBFt4tcyYcAjjm34_t_NnmaPb9VKHUWTm66Wm5yi7RV2iNqmJkpfiYfzCgOJu1hdl8QsC7VkhIRi3TSlA==";
 
-// --- Pin Definitions ---
-#define BUTTON_PIN 23
-#define LED_PIN 2
-#define I2C_SCL 22
-#define I2C_SDA 21
+// Use default Wire instance for both platforms
+SensorManager sensor(&Wire);
+DisplayManager display(&Wire);
+WiFiManager wifi(KNOWN_SSIDS, KNOWN_PASSWORDS);
+ButtonManager button;
+InfluxManager influx(INFLUX_URL, INFLUX_ORG, INFLUX_BUCKET, INFLUX_TOKEN);
 
-// --- OLED Display Setup ---
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 32 // Change to 64 if your display is 128x64
-#define OLED_RESET    -1 // No reset pin
-
-TwoWire I2C_PORT = TwoWire(1);
-
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &I2C_PORT, OLED_RESET);
-
-// --- AHT10 Sensor Setup ---
-Adafruit_AHTX0 aht10;
-
-Toggle button(BUTTON_PIN);
-
-time_t last_serial_print = 0;
+unsigned long last_serial_print = 0;
+unsigned long last_influx_write = 0;
+unsigned long last_display_update = 0;
 
 void setup() {
-  Serial.begin(115200);
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);
-  delay(1000);
-  digitalWrite(LED_PIN, LOW);
-  delay(1000);
-
-  Serial.println("Garden Monitor v0.1.0");
-  Serial.println("Initializing Firmware...");
-
-  // Initialize Button
-  button.blink(10);
-
-  // Initialize I2C port
-  I2C_PORT.begin(I2C_SDA, I2C_SCL);
-
-  // Initialize I2C for AHT10 sensor
-  if (!aht10.begin(&I2C_PORT)) {
-    Serial.println("AHT10 sensor allocation failed");
-    while (1);
-  }
-  Serial.println("AHT10 sensor initialized!");
-
-  // Initialize I2C for OLED display
-  
-  Serial.println("OLED display initialized!");
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("SSD1306 allocation failed"));
-    while (1);
-  }
-
-  // Initialize OLED display
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println(F("Garden Monitor v0.1.0"));
-  display.println(F("Initializing..."));
-  display.display();
-  delay(1000);
-
-  // Initialize WiFi
-  Serial.println("Initializing WiFi...");
-  Serial.print(sizeof(KNOWN_SSIDS));
-  Serial.println(" known networks");
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.println(F("Garden Monitor v0.1.0"));
-  display.println(F("Initializing WiFi..."));
-  display.print(sizeof(KNOWN_SSIDS));
-  display.println(F(" known networks"));
-  display.display();
-
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(1000);
-  for (int i = 0; i < sizeof(KNOWN_SSIDS); i++) {
-    Serial.print("Connecting to ");
-    Serial.print(KNOWN_SSIDS[i]);
-    Serial.println("...");
-    display.clearDisplay();
-    display.setCursor(0, 0);
-    display.println(F("Garden Monitor v0.1.0"));
-    display.println(F("Initializing WiFi..."));
-    display.print(F("Connecting to "));
-    display.print(KNOWN_SSIDS[i]);
-    display.println(F("..."));
-    display.display();
-    WiFi.begin(KNOWN_SSIDS[i], KNOWN_PASSWORDS[i]);
-    int timeout = 10;
-    while (WiFi.status() != WL_CONNECTED && timeout > 0) {
-      delay(500);
-      timeout--;
+    Serial.begin(115200);
+    Serial.println("Garden Monitor v1.0.0");
+    Serial.println("Initializing...");
+    
+    // Initialize LED
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, HIGH);
+    delay(500);
+    digitalWrite(LED_PIN, LOW);
+    
+    // Initialize button
+    button.begin();
+    
+    // Initialize I2C
+    Wire.begin(I2C_SDA, I2C_SCL);
+    
+    // Initialize sensor
+    if (!sensor.begin()) {
+        Serial.println("ERROR: AHT sensor initialization failed!");
+        while (1) {
+            digitalWrite(LED_PIN, HIGH);
+            delay(100);
+            digitalWrite(LED_PIN, LOW);
+            delay(100);
+        }
     }
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("Connected!");
-      Serial.print("IP: ");
-      Serial.println(WiFi.localIP());
-      break;
+    Serial.println("AHT sensor initialized");
+    
+    // Initialize display
+    if (!display.begin()) {
+        Serial.println("ERROR: Display initialization failed!");
+        while (1) {
+            digitalWrite(LED_PIN, HIGH);
+            delay(200);
+            digitalWrite(LED_PIN, LOW);
+            delay(200);
+        }
     }
-    if (WiFi.status() == WL_CONNECT_FAILED) {
-      Serial.println("Connection failed!");
-      continue;
+    Serial.println("Display initialized");
+    
+    // Show startup screen
+    display.showStartup();
+    delay(2000);
+    
+    // Initialize WiFi
+    Serial.println("Connecting to WiFi...");
+    display.showWiFiConnecting("Scanning...");
+    
+    if (wifi.connect()) {
+        Serial.println("WiFi connected successfully");
+        display.showWiFiStatus("Connected", wifi.getLocalIP());
+    } else {
+        Serial.println("WiFi connection failed");
+        display.showWiFiStatus("Failed", nullptr);
     }
-  }
-  Serial.println("WiFi initialized!");
-
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.println(F("Garden Monitor v0.1.0"));
-  display.println(F("Ready"));
-  display.println(F("WiFi: "));
-  display.println(WiFi.localIP());
-  display.display();
-
-  delay(1000);
-
+    delay(2000);
+    
+    // Initialize InfluxDB
+    Serial.println("Initializing InfluxDB...");
+    influx.setDevice("garden-monitor-v1");
+    
+    Serial.println("Syncing time...");
+    display.showInfluxStatus(false, "Syncing time...");
+    delay(1000);
+    
+    if (influx.begin()) {
+        Serial.println("InfluxDB connected successfully");
+        Serial.print("Last status: ");
+        Serial.println(influx.getLastError());
+        display.showInfluxStatus(true, "Ready");
+    } else {
+        Serial.print("InfluxDB connection failed: ");
+        Serial.println(influx.getLastError());
+        display.showInfluxStatus(false, influx.getLastError());
+    }
+    delay(2000);
+    
+    Serial.println("Setup complete - entering main loop");
 }
 
 void loop() {
-
-  sensors_event_t humidity, temp;
-  aht10.getEvent(&humidity, &temp);
-
-  button.poll();
-
-  if (button.isPressed()) {
-    Serial.println("Button pressed");
-    digitalWrite(LED_PIN, HIGH);
-  }
-  if (button.isReleased()) {
-    Serial.println("Button released");
-    digitalWrite(LED_PIN, LOW);
-  }
-
-  if (millis() - last_serial_print > 1000) {
-    last_serial_print = millis();
-    Serial.print("Temp: ");
-    Serial.print(temp.temperature);
-    Serial.print(" °C, Hum: ");
-    Serial.print(humidity.relative_humidity);
-    Serial.println(" %");
-  }
-
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.println(F("Garden Monitor"));
-  display.print("Temp: ");
-  display.print(temp.temperature, 1);
-  display.println(" C");
-  display.print("Hum:  ");
-  display.print(humidity.relative_humidity, 1);
-  display.println(" %");
-  if (button.isPressed()) {
-    display.println(F("Button Pressed"));
-  } else {
-    display.print(F("WiFi: "));
-    display.println(WiFi.localIP());
-  }
-  display.display();
-
+    float temperature = 0, humidity = 0;
+    
+    // Read sensor data
+    if (!sensor.read(temperature, humidity)) {
+        Serial.println("Sensor read failed");
+        temperature = -999;
+        humidity = -999;
+    }
+    
+    // Handle button
+    button.poll();
+    bool buttonPressed = button.isPressed();
+    
+    // Update LED based on button state
+    digitalWrite(LED_PIN, buttonPressed ? HIGH : LOW);
+    
+    // Serial output every second
+    if (millis() - last_serial_print > 1000) {
+        last_serial_print = millis();
+        Serial.print("Temp: ");
+        Serial.print(temperature, 1);
+        Serial.print("°C, Humidity: ");
+        Serial.print(humidity, 1);
+        Serial.print("%, WiFi: ");
+        Serial.print(wifi.isConnected() ? "Connected" : "Disconnected");
+        Serial.print(", InfluxDB: ");
+        Serial.println(influx.isConnected() ? "Connected" : "Disconnected");
+    }
+    
+    // Write to InfluxDB every 10 seconds
+    if (wifi.isConnected() && millis() - last_influx_write > 10000) {
+        last_influx_write = millis();
+        Serial.print("Writing to InfluxDB... ");
+        if (influx.write(temperature, humidity)) {
+            Serial.println("Success!");
+            Serial.print("Status: ");
+            Serial.println(influx.getLastError());
+        } else {
+            Serial.println("Failed!");
+            Serial.print("Error: ");
+            Serial.println(influx.getLastError());
+        }
+    }
+    
+    // Update display every 500ms
+    if (millis() - last_display_update > 500) {
+        last_display_update = millis();
+        display.showReadings(temperature, humidity, wifi.getLocalIP(), buttonPressed);
+    }
+    
+    delay(50); // Small delay to prevent overwhelming the system
 } 
